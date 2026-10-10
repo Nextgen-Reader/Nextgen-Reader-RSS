@@ -1,0 +1,430 @@
+#################################################################
+#
+# For license of this file, see <project-root-folder>/LICENSE.md.
+#
+# This is RSS Guard compilation script for cmake.
+#
+# Usage (out of source build type, we have two side by side folders:
+# empty "build-dir" and RSS Guard repository "rssguard-dir"):
+#   a) DEBUG build for testing.
+#     cd build-dir
+#     cmake -DCMAKE_BUILD_TYPE="Debug" ../rssguard-dir/
+#     cmake --build .
+#     cmake --install .
+#
+#   b) RELEASE build for production use.
+#     cd build-dir
+#     cmake -DCMAKE_BUILD_TYPE="Release" ../rssguard-dir/
+#     cmake --build .
+#     cmake --install .
+#
+# Configure options:
+#   BUILD_WITH_QT6 - Build either with Qt 6 or Qt 5.
+#   BUILD_MSYS2 - Build RSS Guard for MSYS2 distribution, this particularly
+#                 enables relevant MSYS2 FHS tweaks.
+#   NO_UPDATE_CHECK - Disable automatic checking for new application updates.
+#   IS_FLATPAK_BUILD - Set to "ON" when building RSS Guard with Flatpak.
+#   FORCE_BUNDLE_ICONS - Forcibly bundles icons into executables.
+#   RUN_GO_MOD_TIDY - Runs "go mod tidy" when bundling Go-based plugins.
+#   ENABLE_TESTING - Enables unit tests.
+#   ENABLE_BENCHMARKS - Enables benchmarks.
+#   BUILD_XMPP_PLUGIN - Builds XMPP plugin. This only works for Qt 6.
+#   WEB_ARTICLE_VIEWER_WEBENGINE - Use QtWebEngine-based article/web viewer. If set to "OFF"
+#                                  then very simple QTextBrowser viewer is used.
+#   ENABLE_ICU - Enable direct ICU dependency, used to convert among text encodings.
+#   ENABLE_MEDIAPLAYER_QTMULTIMEDIA - Enable media player (QtMultimedia/ffmpeg implementation).
+#   ENABLE_MEDIAPLAYER_LIBMPV - Enable media player (libmpv implementation). Use "LibMPV_ROOT" variable to specify
+#                               base libmpv directory.
+#   MEDIAPLAYER_FORCE_OPENGL - When libmpv media player is enabled, then this forces it to use
+#                              its OpenGL renderer. This renderer is potentially faster, more modern
+#                              and supports wider range of platforms. Legacy "window-based" renderer
+#                              should be likely avoided in new codebases.
+#   ENABLE_COMPRESSED_SITEMAP - Set to "ON" if you want to enable support for "sitemap.xml.gz" format.
+#                               This requires "zlib" library and if you want to use specific
+#                               zlib location, then use "ZLIB_ROOT" variable, for example
+#                               -DZLIB_ROOT="C:\\zlib"
+#   {FEEDLY,GMAIL,INOREADER}_CLIENT_ID - preconfigured OAuth client ID.
+#   {FEEDLY,GMAIL,INOREADER}_CLIENT_SECRET - preconfigured OAuth client SECRET.
+#
+# Other information:
+#   - supports Windows, Linux, *BSD, macOS, OS/2,
+#   - Qt 5.15.0 or newer is required,
+#   - Qt 6.5.0 or newer is required,
+#   - Go compiler is required for building rssguard-article-extractor,
+#   - cmake 3.21.1 or newer is required,
+#   - if you wish to make packages for Windows, then you must initialize all submodules
+#     within repository before compilation,
+#   - C++ 17 is required.
+#
+# Building on OS/2:
+#   RSS Guard can run on OS/2 and if you want to compile it by yourself, you need to make sure that
+#   your OS/2 distro is up-to-date and you have all dependencies installed: os2-base, all gcc-* packages,
+#   libc and libcx up-to-date, kbuild-make, ash, binutils, all relevant qt5-* packages.
+#
+#   After your dependecies are installed, then you can compile via standard `cmake -> make -> make install` steps
+#   and package with: 7z.exe a -t7z -mmt -mx9 "rssguard.7z" "<build-folder\src\rssguard\app\*" command.
+#
+# Authors and contributors:
+#   - Martin Rotter (project leader),
+#   - Elbert Pol (OS/2-related contributions),
+#   - Anna Vyalkova (cmake-related contributions).
+#
+#################################################################
+
+cmake_minimum_required(VERSION 3.21.1)
+
+# Global variables describing the project.
+file(STRINGS "resources/text/CHANGELOG" CHANGELOG)
+string(REGEX MATCH "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]" DATE ${CHANGELOG})
+string(REGEX MATCH "[0-9][0-9][0-9][0-9]" YEAR ${DATE})
+
+set(APP_NAME "RSS Guard")
+set(APP_EMAIL "rotter.martinos@gmail.com")
+set(APP_AUTHOR "Martin Rotter")
+set(APP_COPYRIGHT "\\251 2011-${YEAR} ${APP_AUTHOR}")
+set(APP_REVERSE_NAME "io.github.martinrotter.rssguard")
+set(APP_DONATE_URL "https://github.com/sponsors/martinrotter")
+set(APP_VERSION "5.2.6")
+string(SUBSTRING "${APP_VERSION}" 0 1 APP_VERSION_MAJOR)
+
+set(APP_URL "https://github.com/martinrotter/rssguard")
+set(APP_URL_ISSUES_NEW "https://github.com/martinrotter/rssguard/issues/new/choose")
+
+project(rssguard VERSION ${APP_VERSION} LANGUAGES CXX C)
+
+# Basic C++ related behavior of cmake.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC OFF)
+set(CMAKE_INCLUDE_CURRENT_DIR ON)
+set(CMAKE_SUPPRESS_DEVELOPER_WARNINGS ON)
+
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE "Release")
+endif()
+
+if(UNIX)
+  add_compile_options(-fPIC)
+endif()
+
+if(APPLE)
+  add_compile_options(-stdlib=libc++)
+  add_link_options(-stdlib=libc++)
+endif()
+
+# Global compilation switches.
+option(IS_DEVBUILD "Building as development build." ON)
+option(BUILD_WITH_QT6 "Build application with Qt 6." ON)
+option(BUILD_MSYS2 "Build application for MSYS2 ecosystem." OFF)
+option(UPDATE_TRANSLATIONS "Call lupdate to update translation files from source (Qt 6 only)." OFF)
+option(FORCE_COLORED_OUTPUT "Always produce ANSI-colored output (GCC/Clang only)." OFF)
+option(LOAD_PLUGINS_FROM_PARENT "Force loading of plugin libraries from parent folder." OFF)
+option(REVISION_FROM_GIT "Get revision using `git rev-parse`." ON)
+option(NO_UPDATE_CHECK "Disable automatic checking for new application updates." OFF)
+option(IS_FLATPAK_BUILD "Set to 'ON' when building RSS Guard with Flatpak." OFF)
+option(RUN_GO_MOD_TIDY "Runs 'go mod tidy' when bundling Go-based plugins." OFF)
+option(FORCE_BUNDLE_ICONS "Forcibly bundle icon themes into RSS Guard." OFF)
+option(ENABLE_TESTING "Enable unit tests." OFF)
+option(ENABLE_PACKAGE_SMOKE_TEST "Build the macOS CI package smoke-test executable." OFF)
+option(ENABLE_BENCHMARKS "Enable benchmarks." OFF)
+option(ENABLE_ICU "Enable ICU." OFF)
+option(ENABLE_COMPRESSED_SITEMAP "Enable support for gzip-compressed sitemap feeds. Requires zlib." OFF)
+option(ENABLE_MEDIAPLAYER_QTMULTIMEDIA "Enable built-in media player. Requires QtMultimedia FFMPEG plugin." OFF)
+option(ENABLE_MEDIAPLAYER_LIBMPV "Enable built-in media player. Requires libmpv library." ON)
+option(MEDIAPLAYER_FORCE_OPENGL "Use opengl-based render API with libmpv." ON)
+option(USE_SYSTEM_QXMPP "Use qxmpp library from the system." OFF)
+option(BUILD_XMPP_PLUGIN "Build XMPP plugin." OFF)
+option(WEB_ARTICLE_VIEWER_WEBENGINE "Use QtWebEngine-based article/web viewer." ON)
+
+if(IS_DEVBUILD)
+  message(STATUS "Build as development build.")
+  set(APP_URL_DOCUMENTATION "https://rssguard.readthedocs.io/en/latest")
+else()
+  message(STATUS "Building as release build.")
+  set(APP_URL_DOCUMENTATION "https://rssguard.readthedocs.io/en/stable")
+endif()
+
+# Import Qt libraries.
+set(QT6_MIN_VERSION 6.5.0)
+set(QT5_MIN_VERSION 5.15.0)
+
+set(QT_COMPONENTS
+  Core
+  Gui
+  LinguistTools
+  Network
+  Qml
+  PrintSupport
+  Sql
+  Widgets
+  Xml
+  Concurrent
+)
+
+if (WEB_ARTICLE_VIEWER_WEBENGINE)
+  list(APPEND QT_COMPONENTS WebEngineWidgets)
+  add_compile_definitions(WEB_ARTICLE_VIEWER_WEBENGINE)
+
+  message(STATUS "We will use QtWebEngine-based web viewer.")
+else()
+  set(APP_REVERSE_NAME "io.github.martinrotter.rssguardlite")
+  add_compile_definitions(WEB_ARTICLE_VIEWER_TEXTBROWSER)
+
+  message(STATUS "We will use QTextBrowser-based web viewer.")
+endif()
+
+if(WIN32 AND NOT BUILD_WITH_QT6)
+  list(APPEND QT_COMPONENTS WinExtras)
+endif()
+
+if(NOT OS2)
+  list(APPEND QT_COMPONENTS Multimedia)
+endif()
+
+if(ENABLE_TESTING OR ENABLE_BENCHMARKS)
+  list(APPEND QT_COMPONENTS Test)
+endif()
+
+if(FORCE_COLORED_OUTPUT)
+  if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+    add_compile_options(-fdiagnostics-color=always)
+  elseif("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+    add_compile_options(-fcolor-diagnostics)
+  endif()
+endif()
+
+if(ENABLE_MEDIAPLAYER_QTMULTIMEDIA AND ENABLE_MEDIAPLAYER_LIBMPV)
+  message(FATAL_ERROR "You can only enable 1 media player backend.")
+endif()
+
+if(ENABLE_MEDIAPLAYER_QTMULTIMEDIA)
+  message(STATUS "Enabling QtMultimedia media player backend.")
+
+  list(APPEND QT_COMPONENTS OpenGL MultimediaWidgets)
+  add_compile_definitions(ENABLE_MEDIAPLAYER_QTMULTIMEDIA)
+endif()
+
+if(ENABLE_MEDIAPLAYER_LIBMPV)
+  message(STATUS "Enabling libmpv media player backend.")
+
+  if(WIN32 AND NOT LibMPV_ROOT)
+    set(LibMPV_ROOT "${CMAKE_SOURCE_DIR}/resources/scripts/libmpv")
+  endif()
+
+  if(MEDIAPLAYER_FORCE_OPENGL)
+    message(STATUS "Forcing OpenGL-based rendering for libmpv.")
+
+    list(APPEND QT_COMPONENTS Quick OpenGL)
+
+    if(BUILD_WITH_QT6)
+      list(APPEND QT_COMPONENTS OpenGLWidgets)
+    endif()
+
+    add_compile_definitions(MEDIAPLAYER_LIBMPV_OPENGL)
+  endif()
+
+  add_compile_definitions(ENABLE_MEDIAPLAYER_LIBMPV)
+endif()
+
+if(ENABLE_MEDIAPLAYER_QTMULTIMEDIA OR ENABLE_MEDIAPLAYER_LIBMPV)
+  set(ENABLE_MEDIAPLAYER TRUE)
+  add_compile_definitions(ENABLE_MEDIAPLAYER)
+else()
+  message(STATUS "Media player feature is disabled.")
+endif()
+
+if(ENABLE_ICU)
+  if(WIN32 AND NOT ICU_ROOT)
+    set(ICU_ROOT "${CMAKE_SOURCE_DIR}/resources/scripts/icu")
+  endif()
+
+  if(APPLE AND NOT ICU_ROOT)
+    find_program(HOMEBREW_EXECUTABLE brew)
+    if(HOMEBREW_EXECUTABLE)
+      execute_process(
+        COMMAND ${HOMEBREW_EXECUTABLE} --prefix icu4c
+        OUTPUT_VARIABLE ICU_ROOT
+        RESULT_VARIABLE ICU_PREFIX_RESULT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+      )
+      if(NOT ICU_PREFIX_RESULT EQUAL 0)
+        unset(ICU_ROOT)
+      endif()
+    endif()
+  endif()
+
+  add_compile_definitions(HAS_ICU)
+endif()
+
+if(UNIX AND NOT APPLE)
+  list(APPEND QT_COMPONENTS DBus)
+endif()
+
+set(QT_NO_PRIVATE_MODULE_WARNING ON)
+
+if(BUILD_WITH_QT6)
+  find_package(QT NAMES Qt6)
+  find_package(Qt6 ${QT6_MIN_VERSION} REQUIRED ${QT_COMPONENTS} OPTIONAL_COMPONENTS GuiPrivate)
+else()
+  find_package(QT NAMES Qt5)
+  find_package(Qt5 ${QT5_MIN_VERSION} REQUIRED ${QT_COMPONENTS})
+
+  if(Qt5Core_VERSION VERSION_LESS 5.15.0)
+    # Compatibility macros.
+    macro(qt_wrap_ui)
+      qt5_wrap_ui(${ARGN})
+    endmacro()
+
+    macro(qt_add_resources)
+      qt5_add_resources(${ARGN})
+    endmacro()
+
+    macro(qt_add_big_resources)
+      qt5_add_big_resources(${ARGN})
+    endmacro()
+
+    macro(qt_create_translation)
+      qt5_create_translation(${ARGN})
+    endmacro()
+
+    macro(qt_add_translation)
+      qt5_add_translation(${ARGN})
+    endmacro()
+  endif()
+endif()
+
+message(STATUS "Qt major version: '${QT_VERSION_MAJOR}'.")
+
+# Load git commit hash.
+if(REVISION_FROM_GIT AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+  execute_process(COMMAND "git" "rev-parse" "--short" "HEAD"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    OUTPUT_VARIABLE APP_REVISION
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+
+  message(STATUS "Detected git revision: '${APP_REVISION}'.")
+else()
+  message(STATUS "No git revision found, assuming stable build.")
+  set(APP_REVISION "stable")
+endif()
+
+set(APP_LOW_NAME "${CMAKE_PROJECT_NAME}")
+
+# Pass common defines.
+add_compile_definitions(
+  APP_NAME="${APP_NAME}"
+  APP_VERSION="${CMAKE_PROJECT_VERSION}"
+  APP_VERSION_MAJOR="${APP_VERSION_MAJOR}"
+  APP_URL="${APP_URL}"
+  APP_LONG_NAME="${APP_NAME} ${CMAKE_PROJECT_VERSION}"
+  APP_LOW_NAME="${APP_LOW_NAME}"
+  APP_REVERSE_NAME="${APP_REVERSE_NAME}"
+  APP_AUTHOR="${APP_AUTHOR}"
+  APP_DONATE_URL="${APP_DONATE_URL}"
+  APP_EMAIL="${APP_EMAIL}"
+  APP_LOW_H_NAME=".${CMAKE_PROJECT_NAME}"
+  APP_REVISION="${APP_REVISION}"
+  APP_SYSTEM_NAME="${CMAKE_SYSTEM_NAME}"
+  APP_SYSTEM_VERSION="${CMAKE_SYSTEM_PROCESSOR}"
+  APP_URL_DOCUMENTATION="${APP_URL_DOCUMENTATION}"
+  APP_URL_ISSUES_NEW="${APP_URL_ISSUES_NEW}"
+  APP_USERAGENT="${APP_NAME}/${CMAKE_PROJECT_VERSION}"
+  BUILD_DATE="${DATE}"
+
+  QT_USE_QSTRINGBUILDER
+  QT_USE_FAST_CONCATENATION
+  QT_USE_FAST_OPERATOR_PLUS
+  UNICODE
+  _UNICODE
+)
+
+if(NO_UPDATE_CHECK)
+  add_compile_definitions(NO_UPDATE_CHECK)
+endif()
+
+if(IS_FLATPAK_BUILD)
+  add_compile_definitions(IS_FLATPAK_BUILD)
+endif()
+
+if(BUILD_MSYS2)
+  add_compile_definitions(BUILD_MSYS2)
+endif()
+
+
+if(BUILD_XMPP_PLUGIN AND BUILD_WITH_QT6)
+  set(PLUGIN_XMPP_ENABLED 1)
+else()
+  set(PLUGIN_XMPP_ENABLED 0)
+endif()
+
+# Configure and copy some needed files.
+if(WIN32)
+  configure_file(
+    resources/rssguard.rc.in
+    ${CMAKE_BINARY_DIR}/rssguard.rc
+    NEWLINE_STYLE WIN32
+  )
+
+  configure_file(
+    resources/nsis/NSIS.definitions.nsh.in
+    ${CMAKE_BINARY_DIR}/NSIS.definitions.nsh
+  )
+
+  file(COPY resources/nsis/NSIS.template.in DESTINATION ${CMAKE_BINARY_DIR})
+  file(COPY resources/graphics/${CMAKE_PROJECT_NAME}.ico DESTINATION ${CMAKE_BINARY_DIR})
+elseif(APPLE)
+  set(MACOS_MINIMUM_VERSION_PLIST_ENTRY "")
+  if(CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(MACOS_MINIMUM_VERSION_PLIST_ENTRY
+      "<key>LSMinimumSystemVersion</key><string>${CMAKE_OSX_DEPLOYMENT_TARGET}</string>")
+  endif()
+  configure_file(
+    resources/macosx/Info.plist.in
+    ${CMAKE_BINARY_DIR}/Info.plist
+  )
+elseif(UNIX)
+  add_subdirectory(resources/desktop)
+  add_compile_definitions(
+    APPDATA_NAME="${APPDATA_NAME}"
+    APPDATA_SUMMARY="${APPDATA_SUMMARY}"
+  )
+endif()
+
+# Common libraries.
+add_subdirectory(src/librssguard)
+add_subdirectory(localization)
+
+# Plugins.
+add_subdirectory(src/librssguard-feedly)
+add_subdirectory(src/librssguard-gmail)
+add_subdirectory(src/librssguard-greader)
+add_subdirectory(src/librssguard-nextcloud)
+add_subdirectory(src/librssguard-standard)
+add_subdirectory(src/librssguard-ttrss)
+
+if(BUILD_XMPP_PLUGIN)
+  if(BUILD_WITH_QT6)
+    add_subdirectory(src/librssguard-xmpp)
+  else()
+    message(WARNING "XMPP plugin is only available when building with Qt 6.")
+  endif()
+endif()
+
+# Additional programs.
+add_subdirectory(resources/scripts/standalone/article-extractor)
+
+# GUI executable.
+add_subdirectory(src/rssguard)
+
+# Tests and benchmarks.
+if(ENABLE_TESTING OR ENABLE_BENCHMARKS)
+  enable_testing()
+  add_subdirectory(tests)
+endif()
